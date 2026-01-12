@@ -1,0 +1,89 @@
+group 'com.chenyeju295.flutter_uvc_camera'
+version '1.0-SNAPSHOT'
+
+
+buildscript {
+    ext.kotlin_version = '1.9.24'
+
+    repositories {
+        google()
+        mavenCentral()
+        maven { url "https://jitpack.io" }
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.4.1'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url "https://jitpack.io" }
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    if (project.android.hasProperty("namespace")) {
+        namespace 'com.chenyeju'
+    }
+    viewBinding {
+        enabled = true
+    }
+    compileSdk 34
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+        main.java.srcDirs += 'src/main/kotlin'
+        test.java.srcDirs += 'src/test/kotlin'
+    }
+
+    defaultConfig {
+        minSdkVersion 19
+    }
+
+    dependencies {
+        // implementation 'com.github.chenyeju295.AndroidUSBCamera:libausbc:3.3.6'
+        // implementation 'com.github.chenyeju295.AndroidUSBCamera:libuvc:3.3.6'
+        implementation 'androidx.appcompat:appcompat:1.6.1'
+        implementation fileTree(dir: 'libs', include: ['*.jar'])
+        implementation 'com.android.support.constraint:constraint-layout: 5.0.0'
+        implementation 'com.google.code.gson:gson:2.8.8'
+        implementation project(":libausbc")
+        implementation project(":libuvc")
+        implementation project(":libnative")
+    }
+
+    lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    testOptions {
+        unitTests.all {
+            useJUnitPlatform()
+            testLogging {
+               events "passed", "skipped", "failed", "standardOut", "standardError"
+               outputs.upToDateWhen {false}
+               showStandardStreams = true
+            }
+        }
+    }
+}
+

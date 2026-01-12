@@ -1,0 +1,632 @@
+/*
+ * Copyright 2017-2023 Jiangdg
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.chenyeju
+
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.SurfaceTexture
+import android.hardware.usb.UsbDevice
+import android.provider.MediaStore
+import android.view.Surface
+import android.view.SurfaceView
+import android.view.TextureView
+import com.jiangdg.ausbc.MultiCameraClient
+import com.jiangdg.ausbc.MultiCameraClient.Companion.CAPTURE_TIMES_OUT_SEC
+import com.jiangdg.ausbc.MultiCameraClient.Companion.MAX_NV21_DATA
+import com.jiangdg.ausbc.callback.ICameraStateCallBack
+import com.jiangdg.ausbc.callback.ICaptureCallBack
+import com.jiangdg.ausbc.callback.IPreviewDataCallBack
+import com.jiangdg.ausbc.camera.bean.PreviewSize
+import com.jiangdg.ausbc.utils.CameraUtils
+import com.jiangdg.ausbc.utils.Logger
+import com.jiangdg.ausbc.utils.MediaUtils
+import com.jiangdg.ausbc.utils.Utils
+import com.jiangdg.uvc.IButtonCallback
+import com.jiangdg.uvc.IFrameCallback
+import com.jiangdg.uvc.UVCCamera
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+/** UVC Camera
+ *
+ * @author Created by jiangdg on 2023/1/15
+ */
+class CameraUVC(ctx: Context, device: UsbDevice, private val params: Any?
+    ) : MultiCameraClient.ICamera(ctx, device) {
+    private var mUvcCamera: UVCCamera? = null
+    private val mCameraPreviewSize by lazy {
+        arrayListOf<PreviewSize>()
+    }
+    companion object {
+        private const val TAG = "CameraUVC"
+    }
+
+    /**
+     * 检查媒体权限（适配 Android 14+）
+     * Android 13+ 使用 READ_MEDIA_IMAGES/READ_MEDIA_VIDEO
+     * Android 12 及以下使用 WRITE_EXTERNAL_STORAGE
+     */
+    private fun hasMediaPermissions(): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ - 检查新的媒体权限
+            val hasImages = ctx.checkSelfPermission(android.Manifest.permission.READ_MEDIA_IMAGES) == 
+                           android.content.pm.PackageManager.PERMISSION_GRANTED
+            val hasVideos = ctx.checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO) == 
+                           android.content.pm.PackageManager.PERMISSION_GRANTED
+            hasImages || hasVideos
+        } else {
+            // Android 12 及以下 - 检查传统存储权限
+            ctx.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) == 
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private val frameCallBack = IFrameCallback { frame ->
+        frame?.apply {
+            frame.position(0)
+            val data = ByteArray(capacity())
+            get(data)
+            mCameraRequest?.apply {
+                if (data.size != previewWidth * previewHeight * 3 / 2) {
+                    return@IFrameCallback
+                }
+                // for preview callback
+                mPreviewDataCbList.forEach { cb ->
+                    cb?.onPreviewData(data, previewWidth, previewHeight, IPreviewDataCallBack.DataFormat.NV21)
+                }
+                // for image
+                if (mNV21DataQueue.size >= MAX_NV21_DATA) {
+                    mNV21DataQueue.removeLast()
+                }
+                mNV21DataQueue.offerFirst(data)
+                // for video
+                // avoid preview size changed
+                putVideoData(data)
+            }
+        }
+    }
+
+    override fun getAllPreviewSizes(aspectRatio: Double?): MutableList<PreviewSize> {
+        val previewSizeList = arrayListOf<PreviewSize>()
+        if (mUvcCamera?.supportedSizeList?.isNotEmpty() == true) {
+            mUvcCamera?.supportedSizeList
+        }  else {
+            mUvcCamera?.getSupportedSizeList(UVCCamera.FRAME_FORMAT_YUYV)
+        }?.let { sizeList ->
+            if (mCameraPreviewSize.isEmpty()) {
+                mCameraPreviewSize.clear()
+                sizeList.forEach { size->
+                    val width = size.width
+                    val height = size.height
+                    mCameraPreviewSize.add(PreviewSize(width, height))
+                }
+            }
+            mCameraPreviewSize
+        }?.onEach { size ->
+            val width = size.width
+            val height = size.height
+            val ratio = width.toDouble() / height
+            if (aspectRatio == null || aspectRatio == ratio) {
+                previewSizeList.add(PreviewSize(width, height))
+            }
+        }
+
+        return previewSizeList
+    }
+
+    override fun <T> openCameraInternal(cameraView: T) {
+        if (Utils.isTargetSdkOverP(ctx) && !CameraUtils.hasCameraPermission(ctx)) {
+            closeCamera()
+            postStateEvent(ICameraStateCallBack.State.ERROR, "Has no CAMERA permission.")
+            Logger.e(TAG,"open camera failed, need Manifest.permission.CAMERA permission when targetSdk>=28")
+            return
+        }
+        if (mCtrlBlock == null) {
+            closeCamera()
+            postStateEvent(ICameraStateCallBack.State.ERROR, "Usb control block can not be null ")
+            return
+        }
+        // 1. create a UVCCamera
+        val request = mCameraRequest!!
+        try {
+            mUvcCamera = UVCCamera().apply {
+                open(mCtrlBlock)
+            }
+        } catch (e: Exception) {
+            closeCamera()
+            postStateEvent(ICameraStateCallBack.State.ERROR, "open camera failed ${e.localizedMessage}")
+            Logger.e(TAG, "open camera failed.", e)
+        }
+
+        var minFps = 10
+        var maxFps = 60
+        var frameFormat = UVCCamera.FRAME_FORMAT_MJPEG
+        var bandwidthFactor = UVCCamera.DEFAULT_BANDWIDTH
+
+        if (params is Map<*, *>) {
+            minFps = (params["minFps"] as? Number)?.toInt() ?: minFps
+            maxFps = (params["maxFps"] as? Number)?.toInt() ?: maxFps
+            frameFormat = (params["frameFormat"] as? Number)?.toInt() ?: frameFormat
+            bandwidthFactor = (params["bandwidthFactor"] as? Number)?.toFloat() ?: bandwidthFactor
+        }
+
+        // 2. set preview size and register preview callback
+        var previewSize = getSuitableSize(request.previewWidth, request.previewHeight).apply {
+            mCameraRequest!!.previewWidth = width
+            mCameraRequest!!.previewHeight = height
+        }
+
+        try {
+            Logger.i(TAG, "getSuitableSize: $previewSize")
+            if (! isPreviewSizeSupported(previewSize)) {
+                closeCamera()
+                postStateEvent(ICameraStateCallBack.State.ERROR, "unsupported preview size")
+                Logger.e(TAG, "open camera failed, preview size($previewSize) unsupported-> ${mUvcCamera?.supportedSizeList}")
+                return
+            }
+            initEncodeProcessor(previewSize.width, previewSize.height)
+            // if give custom minFps or maxFps or unsupported preview size
+            // this method will fail
+            mUvcCamera?.setPreviewSize(
+                previewSize.width,
+                previewSize.height,
+                minFps,
+                maxFps,
+                frameFormat,
+                bandwidthFactor
+            )
+        } catch (e: Exception) {
+            try {
+                previewSize = getSuitableSize(request.previewWidth, request.previewHeight).apply {
+                    mCameraRequest!!.previewWidth = width
+                    mCameraRequest!!.previewHeight = height
+                }
+                if (! isPreviewSizeSupported(previewSize)) {
+                    postStateEvent(ICameraStateCallBack.State.ERROR, "unsupported preview size")
+                    closeCamera()
+                    Logger.e(TAG, "open camera failed, preview size($previewSize) unsupported-> ${mUvcCamera?.supportedSizeList}")
+                    return
+                }
+                Logger.e(TAG, " setPreviewSize failed, try to use yuv format...")
+                mUvcCamera?.setPreviewSize(
+                    previewSize.width,
+                    previewSize.height,
+                    minFps,
+                    maxFps,
+                    UVCCamera.FRAME_FORMAT_YUYV,
+                    UVCCamera.DEFAULT_BANDWIDTH
+                )
+            } catch (e: Exception) {
+                closeCamera()
+                postStateEvent(ICameraStateCallBack.State.ERROR, "err: ${e.localizedMessage}")
+                Logger.e(TAG, " setPreviewSize failed, even using yuv format", e)
+                return
+            }
+        }
+        // 设置帧回调以支持拍照和录像
+        // 注意：即使使用 OpenGL 渲染，也需要帧回调来获取图像数据用于拍照
+        // 但需要确保不会影响预览性能
+        if (mCameraRequest!!.isRawPreviewData || mCameraRequest!!.isCaptureRawImage || 
+            !isNeedGLESRender) {
+            mUvcCamera?.setFrameCallback(frameCallBack, UVCCamera.PIXEL_FORMAT_YUV420SP)
+        }
+        // 如果只使用 OpenGL 渲染且不需要拍照录像，则不设置帧回调以提升性能
+        // 3. start preview
+        when(cameraView) {
+            is Surface -> {
+                mUvcCamera?.setPreviewDisplay(cameraView)
+            }
+            is SurfaceTexture -> {
+                mUvcCamera?.setPreviewTexture(cameraView)
+            }
+            is SurfaceView -> {
+                mUvcCamera?.setPreviewDisplay(cameraView.holder)
+            }
+            is TextureView -> {
+                mUvcCamera?.setPreviewTexture(cameraView.surfaceTexture)
+            }
+            else -> {
+                throw IllegalStateException("Only support Surface or SurfaceTexture or SurfaceView or TextureView or GLSurfaceView--$cameraView")
+            }
+        }
+        mUvcCamera?.autoFocus = true
+        mUvcCamera?.autoWhiteBlance = true
+        mUvcCamera?.startPreview()
+        mUvcCamera?.updateCameraParams()
+        isPreviewed = true
+        postStateEvent(ICameraStateCallBack.State.OPENED)
+        
+        // 延迟一小段时间确保帧开始流动
+        Thread {
+            try {
+                Thread.sleep(500)
+                val queueSize = mNV21DataQueue.size
+                if (queueSize == 0) {
+                    Logger.w(TAG, "Warning: No frames received after 500ms")
+                }
+            } catch (e: Exception) {
+                Logger.e(TAG, "Error checking frame status", e)
+            }
+        }.start()
+        
+        Logger.i(TAG, " start preview, name = ${device.deviceName}, preview=$previewSize")
+    }
+
+    override fun closeCameraInternal() {
+        postStateEvent(ICameraStateCallBack.State.CLOSED)
+        isPreviewed = false
+        releaseEncodeProcessor()
+        mUvcCamera?.destroy()
+        mUvcCamera = null
+        Logger.i(TAG, " stop preview, name = ${device.deviceName}")
+    }
+
+    override fun captureImageInternal(savePath: String?, callback: ICaptureCallBack) {
+        mSaveImageExecutor.submit {
+            // Android 14+ 适配：检查新的媒体权限
+            if (! hasMediaPermissions()) {
+                mMainHandler.post {
+                    callback.onError("have no storage permission")
+                }
+                Logger.e(TAG, "Storage permission denied")
+                return@submit
+            }
+            
+            if (! isPreviewed) {
+                mMainHandler.post {
+                    callback.onError("camera not previewing")
+                }
+                Logger.e(TAG, "Camera not previewing")
+                return@submit
+            }
+            
+            // 立即检查队列状态，不强制延时
+            // 如果队列为空，说明帧数据流有问题，立即返回错误
+            if (mNV21DataQueue.isEmpty()) {
+                Logger.e(TAG, "No frames available in queue. Frame callback may not be working.")
+                mMainHandler.post {
+                    callback.onError("No camera frames available. Please ensure camera is streaming.")
+                }
+                return@submit
+            }
+            
+            // 队列有数据，立即获取（不等待）
+            val data = mNV21DataQueue.pollFirst()
+            
+            if (data == null) {
+                Logger.e(TAG, "Failed to get frame data from queue")
+                mMainHandler.post {
+                    callback.onError("Failed to get frame data")
+                }
+                return@submit
+            }
+            
+            processCapturedImage(data, callback, savePath)
+        }
+    }
+    
+    private fun processCapturedImage(data: ByteArray, callback: ICaptureCallBack, savePath: String?) {
+        mMainHandler.post {
+            callback.onBegin()
+        }
+        
+        val date = mDateFormat.format(System.currentTimeMillis())
+        val title = savePath ?: "IMG_UVC_$date"
+        val displayName = savePath ?: "$title.jpg"
+        val path = savePath ?: "$mCameraDir/$displayName"
+        
+        val width = mCameraRequest!!.previewWidth
+        val height = mCameraRequest!!.previewHeight
+        
+        val ret = MediaUtils.saveYuv2Jpeg(path, data, width, height)
+        
+        if (! ret) {
+            val file = File(path)
+            if (file.exists()) {
+                file.delete()
+            }
+            mMainHandler.post {
+                val msg = "save yuv to jpeg failed" + " " + path + " " + data.size + " " + ret
+                callback.onError(msg)
+            }
+            Logger.e(TAG, "Failed to save YUV to JPEG")
+            return
+        }
+        
+        val values = ContentValues()
+        values.put(MediaStore.Images.ImageColumns.TITLE, title)
+        values.put(MediaStore.Images.ImageColumns.DISPLAY_NAME, displayName)
+        values.put(MediaStore.Images.ImageColumns.DATA, path)
+        values.put(MediaStore.Images.ImageColumns.DATE_TAKEN, date)
+        ctx.contentResolver?.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        
+        mMainHandler.post {
+            callback.onComplete(path)
+        }
+        
+        Logger.i(TAG, "Image saved successfully: $path")
+    }
+
+    /**
+     * Is mic supported
+     *
+     * @return true camera support mic
+     */
+    fun isMicSupported() = CameraUtils.isCameraContainsMic(this.device)
+
+    /**
+     * Send camera command
+     *
+     * This method cannot be verified, please use it with caution
+     */
+    fun sendCameraCommand(command: Int) {
+        mCameraHandler?.post {
+            mUvcCamera?.sendCommand(command)
+        }
+    }
+
+    /**
+     * Set auto focus
+     *
+     * @param enable true enable auto focus
+     */
+    fun setAutoFocus(enable: Boolean) {
+        mUvcCamera?.autoFocus = enable
+    }
+
+    /**
+     * Get auto focus
+     *
+     * @return true enable auto focus
+     */
+    fun getAutoFocus() = mUvcCamera?.autoFocus
+
+    /**
+     * Reset auto focus
+     */
+    fun resetAutoFocus() {
+        mUvcCamera?.resetFocus()
+    }
+
+    /**
+     * Set auto white balance
+     *
+     * @param autoWhiteBalance true enable auto white balance
+     */
+    fun setAutoWhiteBalance(autoWhiteBalance: Boolean) {
+        mUvcCamera?.autoWhiteBlance = autoWhiteBalance
+    }
+
+    /**
+     * Get auto white balance
+     *
+     * @return true enable auto white balance
+     */
+    fun getAutoWhiteBalance() = mUvcCamera?.autoWhiteBlance
+
+    /**
+     * Set zoom
+     *
+     * @param zoom zoom value, 0 means reset
+     */
+    fun setZoom(zoom: Int) {
+        mUvcCamera?.zoom = zoom
+    }
+
+    /**
+     * Get zoom
+     */
+    fun getZoom() = mUvcCamera?.zoom
+
+    /**
+     * Reset zoom
+     */
+    fun resetZoom() {
+        mUvcCamera?.resetZoom()
+    }
+
+    /**
+     * Set gain
+     *
+     * @param gain gain value, 0 means reset
+     */
+    fun setGain(gain: Int) {
+        mUvcCamera?.gain = gain
+    }
+
+    /**
+     * Get gain
+     */
+    fun getGain() = mUvcCamera?.gain
+
+    /**
+     * Reset gain
+     */
+    fun resetGain() {
+        mUvcCamera?.resetGain()
+    }
+
+    /**
+     * Set gamma
+     *
+     * @param gamma gamma value, 0 means reset
+     */
+    fun setGamma(gamma: Int) {
+        mUvcCamera?.gamma = gamma
+    }
+
+    /**
+     * Get gamma
+     */
+    fun getGamma() = mUvcCamera?.gamma
+
+    /**
+     * Reset gamma
+     */
+    fun resetGamma() {
+        mUvcCamera?.resetGamma()
+    }
+
+    /**
+     * Set brightness
+     *
+     * @param brightness brightness value, 0 means reset
+     */
+    fun setBrightness(brightness: Int) {
+        mUvcCamera?.brightness = brightness
+    }
+
+    /**
+     * Get brightness
+     */
+    fun getBrightness() = mUvcCamera?.brightness
+
+    /**
+     * Reset brightnes
+     */
+    fun resetBrightness() {
+        mUvcCamera?.resetBrightness()
+    }
+
+    /**
+     * Set contrast
+     *
+     * @param contrast contrast value, 0 means reset
+     */
+    fun setContrast(contrast: Int) {
+        mUvcCamera?.contrast = contrast
+    }
+
+    /**
+     * Get contrast
+     */
+    fun getContrast() = mUvcCamera?.contrast
+
+    /**
+     * Reset contrast
+     */
+    fun resetContrast() {
+        mUvcCamera?.resetContrast()
+    }
+
+    /**
+     * Set sharpness
+     *
+     * @param sharpness sharpness value, 0 means reset
+     */
+    fun setSharpness(sharpness: Int) {
+        mUvcCamera?.sharpness = sharpness
+    }
+
+    /**
+     * Get sharpness
+     */
+    fun getSharpness() = mUvcCamera?.sharpness
+
+    /**
+     * Reset sharpness
+     */
+    fun resetSharpness() {
+        mUvcCamera?.resetSharpness()
+    }
+
+    ///设置硬件按钮回调
+    fun setButtonCallback(callback: IButtonCallback?) {
+        mUvcCamera?.setButtonCallback(callback)
+    }
+
+
+
+
+
+    /**
+     * Set saturation
+     *
+     * @param saturation saturation value, 0 means reset
+     */
+    fun setSaturation(saturation: Int) {
+        mUvcCamera?.saturation = saturation
+    }
+
+    /**
+     * Get saturation
+     */
+    fun getSaturation() = mUvcCamera?.saturation
+
+    /**
+     * Reset saturation
+     */
+    fun resetSaturation() {
+        mUvcCamera?.resetSaturation()
+    }
+
+    /**
+     * Set hue
+     *
+     * @param hue hue value, 0 means reset
+     */
+    fun setHue(hue: Int) {
+        mUvcCamera?.hue = hue
+    }
+
+    /**
+     * Get hue
+     */
+    fun getHue() = mUvcCamera?.hue
+
+    /**
+     * Reset saturation
+     */
+    fun resetHue() {
+        mUvcCamera?.resetHue()
+    }
+
+    /**
+     * Get current render FPS from camera
+     */
+    fun getRenderFps(): Int {
+        return try {
+            // First try direct property access if available
+            val directFps = mUvcCamera?.let {
+                try {
+                    val field = it.javaClass.getDeclaredField("currentFps")
+                    field.isAccessible = true
+                    field.getInt(it)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            
+            if (directFps != null && directFps > 0) {
+                directFps
+            } else {
+                // Try to parse from log message if property not available
+                try {
+                    val logMessage = mUvcCamera?.toString() ?: ""
+                    val fpsPattern = "frame rate is (\\d+) fps".toRegex()
+                    val match = fpsPattern.find(logMessage)
+                    match?.groupValues?.get(1)?.toIntOrNull() ?: 28 // Default to 28 if parsing fails
+                } catch (e: Exception) {
+                    28 // Fallback to typical value
+                }
+            }
+        } catch (e: Exception) {
+            Logger.e(TAG, "Error getting render FPS", e)
+            0
+        }
+    }
+
+}

@@ -1,0 +1,5 @@
+rootProject.name = 'flutter_uvc_camera'
+
+include ':libausbc'
+include ':libuvc'
+include ':libnative'
