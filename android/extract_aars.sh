@@ -57,8 +57,8 @@ done
 for dir in "$TEMP_DIR"/*; do
     if [ -d "$dir/res" ]; then
         echo "Copying resources from $(basename "$dir")"
-        # Note: Resources may conflict, so you might need to merge manually
-        cp -r "$dir/res/"* "$SRC_DIR/res/" 2>/dev/null || true
+        # Use rsync to copy resources without overwriting existing files
+        rsync -r "$dir/res/" "$SRC_DIR/res/" 2>/dev/null || true
     fi
 done
 
