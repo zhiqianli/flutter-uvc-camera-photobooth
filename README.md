@@ -318,15 +318,24 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## For Developers: Building Native Libraries
 
-This plugin includes pre-built AAR files for the native Android libraries (`libausbc`, `libuvc`, `libnative`). If you need to modify these libraries or rebuild them:
+This plugin includes pre-compiled JAR files and native libraries for the Android libraries (`libausbc`, `libuvc`, `libnative`). If you need to modify these libraries or rebuild them:
 
 ### Prerequisites
 
-- Java 17 or higher (configure in `android/gradle.properties`)
+- Java 17 or higher (configure in `android/gradle.properties` if needed)
 - Android SDK 34
 - NDK for native code compilation
 
-### Rebuild AAR Files
+### Why JAR instead of AAR?
+
+AAR (Android Archive) files cannot be used as dependencies in a library project that will be built as an AAR itself. This causes the error:
+```
+Direct local .aar file dependencies are not supported when building an AAR
+```
+
+Therefore, we extract the JAR and native library files from the AAR packages and include them directly in the plugin.
+
+### Rebuild Native Libraries
 
 1. Navigate to the android directory:
 
@@ -334,7 +343,7 @@ This plugin includes pre-built AAR files for the native Android libraries (`liba
 cd android
 ```
 
-2. Build each library:
+2. Build each library module:
 
 ```bash
 ./gradlew :libausbc:assembleRelease
@@ -342,32 +351,58 @@ cd android
 ./gradlew :libnative:assembleRelease
 ```
 
-3. Copy the generated AAR files to the libs directory:
+3. Extract JAR and native libraries from the generated AAR files:
 
 ```bash
-cp libausbc/build/outputs/aar/libausbc-release.aar libs/libausbc.aar
-cp libuvc/build/outputs/aar/libuvc-release.aar libs/libuvc.aar
-cp libnative/build/outputs/aar/libnative-release.aar libs/libnative.aar
+# Extract AAR files
+mkdir -p temp_aar_extraction
+unzip -q libausbc/build/outputs/aar/libausbc-release.aar -d temp_aar_extraction/libausbc
+unzip -q libuvc/build/outputs/aar/libuvc-release.aar -d temp_aar_extraction/libuvc
+unzip -q libnative/build/outputs/aar/libnative-release.aar -d temp_aar_extraction/libnative
+
+# Copy JAR files
+mkdir -p libs/jars
+cp temp_aar_extraction/libausbc/classes.jar libs/jars/libausbc.jar
+cp temp_aar_extraction/libuvc/classes.jar libs/jars/libuvc.jar
+cp temp_aar_extraction/libnative/classes.jar libs/jars/libnative.jar
+
+# Copy native libraries
+cp -r temp_aar_extraction/libuvc/jni/* src/main/jniLibs/
+cp -r temp_aar_extraction/libnative/jni/* src/main/jniLibs/
+
+# Clean up
+rm -rf temp_aar_extraction
+```
+
+Or use the provided script:
+
+```bash
+./extract_aars.sh
 ```
 
 4. Update the plugin version in `pubspec.yaml` to release the changes
-5. IF error,please set java version
 
-   ```
-   org.gradle.java.home=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
+5. Commit and push to GitHub with a version tag:
 
-   ```
-
-6. change version in pubspec.yaml ,push to github,and add tag
-
-```
-git tag v1.0.0
-git push origin main v1.0.0
+```bash
+git add -A
+git commit -m "Update native libraries to version X.X.X"
+git tag v1.0.X
+git push origin main v1.0.X
 ```
 
-### Note
+### Troubleshooting
 
-Version management is handled through the plugin version number in `pubspec.yaml`, not through AAR filenames. When you update the native libraries, simply bump the plugin version and users will get the updated AARs when they upgrade.
+**Java Version Error:**
+If you encounter build errors related to Java version, uncomment this line in `android/gradle.properties`:
+```properties
+org.gradle.java.home=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
+```
+
+**Build Issues:**
+- Make sure you're using Java 17 or higher
+- Clean build: `./gradlew clean`
+- Check Android SDK and NDK are properly installed
 
 ## Issue Reporting
 
