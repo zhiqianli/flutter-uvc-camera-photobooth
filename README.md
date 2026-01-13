@@ -323,8 +323,8 @@ This plugin includes pre-compiled JAR files and native libraries for the Android
 ### Prerequisites
 
 - Java 17 or higher (configure in `android/gradle.properties` if needed)
-- Android SDK 34
-- NDK for native code compilation
+- Android SDK 35
+- NDK 27.0.12077973 for native code compilation
 
 ### Why JAR instead of AAR?
 
@@ -335,74 +335,343 @@ Direct local .aar file dependencies are not supported when building an AAR
 
 Therefore, we extract the JAR and native library files from the AAR packages and include them directly in the plugin.
 
-### Rebuild Native Libraries
+## 详细打包流程 (中文版)
 
-1. Navigate to the android directory:
+### 项目架构说明
+
+本项目包含三个 Android 库模块：
+- **libausbc**: Android USB Camera 基础库，提供相机预览、控制等功能
+- **libuvc**: USB UVC 设备底层通信库，基于 libusb 实现
+- **libnative**: 原生代码库，包含 YUV 转换、MP3 编码等功能
+
+这些模块的源代码分别在：
+- `android/libausbc/`
+- `android/libuvc/`
+- `android/libnative/`
+
+### 打包步骤详解
+
+#### 第一步：临时修改 settings.gradle
+
+由于 `settings.gradle` 默认不包含这三个模块（为了适配 FlutterFlow），我们需要临时添加它们：
 
 ```bash
 cd android
 ```
 
-2. Build each library module:
+编辑 `settings.gradle` 文件，添加以下内容：
 
-```bash
-./gradlew :libausbc:assembleRelease
-./gradlew :libuvc:assembleRelease
-./gradlew :libnative:assembleRelease
+```gradle
+rootProject.name = 'flutter_uvc_camera'
+
+include ':libausbc'
+include ':libuvc'
+include ':libnative'
 ```
 
-3. Extract JAR and native libraries from the generated AAR files:
+#### 第二步：编译三个模块的 AAR 文件
+
+执行以下命令编译 Release 版本的 AAR：
 
 ```bash
-# Extract AAR files
-mkdir -p temp_aar_extraction
-unzip -q libausbc/build/outputs/aar/libausbc-release.aar -d temp_aar_extraction/libausbc
-unzip -q libuvc/build/outputs/aar/libuvc-release.aar -d temp_aar_extraction/libuvc
-unzip -q libnative/build/outputs/aar/libnative-release.aar -d temp_aar_extraction/libnative
-
-# Copy JAR files
-mkdir -p libs/jars
-cp temp_aar_extraction/libausbc/classes.jar libs/jars/libausbc.jar
-cp temp_aar_extraction/libuvc/classes.jar libs/jars/libuvc.jar
-cp temp_aar_extraction/libnative/classes.jar libs/jars/libnative.jar
-
-# Copy native libraries
-cp -r temp_aar_extraction/libuvc/jni/* src/main/jniLibs/
-cp -r temp_aar_extraction/libnative/jni/* src/main/jniLibs/
-
-# Clean up
-rm -rf temp_aar_extraction
+./gradlew :libausbc:assembleRelease :libuvc:assembleRelease :libnative:assembleRelease
 ```
 
-Or use the provided script:
+编译成功后，AAR 文件位于：
+- `libausbc/build/outputs/aar/libausbc-release.aar`
+- `libuvc/build/outputs/aar/libuvc-release.aar`
+- `libnative/build/outputs/aar/libnative-release.aar`
+
+#### 第三步：提取 JAR 和原生库文件
+
+使用项目提供的自动化脚本 `extract_aars.sh` 进行提取：
 
 ```bash
 ./extract_aars.sh
 ```
 
-4. Update the plugin version in `pubspec.yaml` to release the changes
+**脚本执行流程：**
 
-5. Commit and push to GitHub with a version tag:
+1. 创建临时解压目录
+2. 解压三个 AAR 文件
+3. 提取 JAR 文件到 `libs/jars/`：
+   - `libausbc.jar` (约 424KB) - 包含相机控制、渲染等 Java/Kotlin 代码
+   - `libuvc.jar` (约 86KB) - 包含 USB 设备通信 Java 代码
+   - `libnative.jar` (约 2.4KB) - 包含原生方法接口
+
+4. 提取原生库文件（.so）到 `src/main/jniLibs/`：
+   - **arm64-v8a/**: 64位 ARM 设备（推荐）
+     - `libUVCCamera.so` - UVC 相机核心库
+     - `libjpeg-turbo1500.so` - JPEG 编解码库
+     - `libusb100.so` - USB 通信库
+     - `libuvc.so` - libusb 包装库
+     - `libnativelib.so` - 原生功能库（YUV/MP3）
+   - **armeabi-v7a/**: 32位 ARM 设备
+     - 包含相同的 5 个 .so 文件
+   - **x86/** 和 **x86_64/**: 模拟器架构
+     - 仅包含 `libnativelib.so`
+
+5. 提取 Android 资源文件到 `src/main/res/`：
+   - `values/colors.xml` - 颜色定义
+   - `values/strings.xml` - 字符串资源
+   - `layout/*.xml` - 布局文件
+   - `raw/*.xml` - USB 设备过滤等配置
+
+6. 清理临时文件
+
+**手动提取方式（如需自定义）：**
 
 ```bash
-git add -A
-git commit -m "Update native libraries to version X.X.X"
-git tag v1.0.X
-git push origin main v1.0.X
+# 创建临时目录
+mkdir -p temp_aar_extraction
+
+# 解压 AAR 文件
+unzip -q libausbc/build/outputs/aar/libausbc-release.aar -d temp_aar_extraction/libausbc
+unzip -q libuvc/build/outputs/aar/libuvc-release.aar -d temp_aar_extraction/libuvc
+unzip -q libnative/build/outputs/aar/libnative-release.aar -d temp_aar_extraction/libnative
+
+# 复制 JAR 文件
+mkdir -p libs/jars
+cp temp_aar_extraction/libausbc/classes.jar libs/jars/libausbc.jar
+cp temp_aar_extraction/libuvc/classes.jar libs/jars/libuvc.jar
+cp temp_aar_extraction/libnative/classes.jar libs/jars/libnative.jar
+
+# 复制原生库文件
+cp -r temp_aar_extraction/libuvc/jni/* src/main/jniLibs/
+cp -r temp_aar_extraction/libnative/jni/* src/main/jniLibs/
+
+# 复制资源文件
+for dir in temp_aar_extraction/*; do
+    if [ -d "$dir/res" ]; then
+        rsync -r "$dir/res/" src/main/res/
+    fi
+done
+
+# 清理
+rm -rf temp_aar_extraction
 ```
 
-### Troubleshooting
+#### 第四步：恢复 settings.gradle
 
-**Java Version Error:**
-If you encounter build errors related to Java version, uncomment this line in `android/gradle.properties`:
+提取完成后，将 `settings.gradle` 恢复到原始状态：
+
+```gradle
+rootProject.name = 'flutter_uvc_camera'
+```
+
+**重要原因：** FlutterFlow 不支持子模块，必须保持 `settings.gradle` 的简洁形式。
+
+#### 第五步：验证提取结果
+
+检查以下文件是否正确生成：
+
+```bash
+# 检查 JAR 文件
+ls -lh libs/jars/
+# 输出应包含：
+# libausbc.jar (~424KB)
+# libuvc.jar (~86KB)
+# libnative.jar (~2.4KB)
+
+# 检查原生库
+ls -lh src/main/jniLibs/arm64-v8a/
+# 输出应包含 5 个 .so 文件
+
+# 检查资源文件
+ls src/main/res/values/
+# 输出应包含 colors.xml 和 strings.xml
+```
+
+#### 第六步：测试构建
+
+在 Flutter 项目根目录执行测试构建：
+
+```bash
+cd ..
+
+# Android 测试构建
+flutter build apk --debug
+
+# 如需发布版本
+flutter build apk --release
+```
+
+### 版本更新流程
+
+当修改了三个模块的源代码后，需要同步更新版本号：
+
+1. **更新模块版本**（三个 build.gradle 文件）：
+
+   `libausbc/build.gradle`:
+   ```gradle
+   versionName '3.4.6'  // 递增版本号
+   version = '3.4.6'
+   ```
+
+   `libuvc/build.gradle`:
+   ```gradle
+   version = '3.4.6'
+   ```
+
+   `libnative/build.gradle`:
+   ```gradle
+   version = '3.4.6'
+   ```
+
+2. **重新编译和提取**：按照上述步骤执行打包
+
+3. **更新 Flutter 插件版本**：
+
+   编辑 `pubspec.yaml`:
+   ```yaml
+   version: 1.0.1  # 根据语义化版本递增
+   ```
+
+4. **提交代码**：
+
+   ```bash
+   git add -A
+   git commit -m "feat: 升级原生库到 v3.4.6
+
+   - libausbc: 优化相机旋转逻辑
+   - libuvc: 修复 USB 检测竞态条件
+   - libnative: 支持 Android 15+ 16K 页面大小
+
+   更新内容：
+   - 升级 compileSdk 到 35
+   - 更新所有 JAR 和 .so 文件
+   - 同步资源文件"
+   ```
+
+5. **打标签发布**：
+
+   ```bash
+   git tag v1.0.1
+   git push origin main --tags
+   ```
+
+### 常见问题排查
+
+#### 1. 编译错误：找不到模块
+
+```
+Cannot locate tasks that match ':libausbc:assembleRelease' as project 'libausbc' not found
+```
+
+**解决方案**：检查 `android/settings.gradle` 是否包含了三个模块。
+
+#### 2. 资源文件冲突
+
+```
+ERROR: resource color/common_30_black not found
+```
+
+**解决方案**：确保 `extract_aars.sh` 脚本正确复制了资源文件到 `src/main/res/`。
+
+#### 3. Java 版本不兼容
+
+```
+Java version 1.8 is not supported
+```
+
+**解决方案**：在 `android/gradle.properties` 中配置 Java 17 路径：
 ```properties
 org.gradle.java.home=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
 ```
 
-**Build Issues:**
-- Make sure you're using Java 17 or higher
-- Clean build: `./gradlew clean`
-- Check Android SDK and NDK are properly installed
+#### 4. NDK 版本问题
+
+```
+NDK version mismatch
+```
+
+**解决方案**：在三个模块的 `build.gradle` 中指定 NDK 版本：
+```gradle
+ndkVersion '27.0.12077973'
+```
+
+#### 5. 原生库架构不匹配
+
+如果应用在某些设备上崩溃，检查是否包含了正确的架构：
+- **推荐**: `arm64-v8a` 和 `armeabi-v7a`（覆盖大多数真机）
+- **可选**: `x86` 和 `x86_64`（仅用于模拟器调试）
+
+在 `libnative/build.gradle` 中配置：
+```gradle
+ndk {
+    abiFilters 'armeabi-v7a', 'arm64-v8a'
+}
+```
+
+### 技术细节说明
+
+#### 模块依赖关系
+
+```
+flutter_uvc_camera (Flutter 插件)
+  ├── libausbc (JAR + 资源)
+  │     └── 依赖: appcompat, xlog
+  ├── libuvc (JAR + .so)
+  │     └── 依赖: 无（纯原生 + Java 包装）
+  └── libnative (JAR + .so)
+        └── 依赖: core-ktx, appcompat
+```
+
+#### 16K 页面大小支持（Android 15+）
+
+从 Android 15 开始，部分设备使用 16KB 内存页面大小。需要添加以下配置：
+
+**CMakeLists.txt**:
+```cmake
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+```
+
+**build.gradle**:
+```gradle
+cmake {
+    arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+}
+```
+
+#### 相机旋转优化
+
+`libausbc` 中的 `CameraRender.kt` 实现了智能旋转矩阵计算：
+- 支持 0°, 90°, 180°, 270° 旋转
+- 自动计算缩放比例以适应屏幕
+- 处理横竖屏切换
+
+### 自动化脚本说明
+
+项目提供了 `android/extract_aars.sh` 脚本来自动化提取流程：
+
+**特性**：
+- 自动创建和清理临时目录
+- 智能合并资源文件（使用 rsync 避免覆盖）
+- 支持增量更新
+- 详细的日志输出
+
+**使用方法**：
+```bash
+cd android
+chmod +x extract_aars.sh  # 首次使用需添加执行权限
+./extract_aars.sh
+```
+
+### 性能优化建议
+
+1. **减少包体积**：
+   - 移除不需要的 ABI 架构（如 x86）
+   - 启用 ProGuard 混淆
+   - 压缩资源文件
+
+2. **加快编译速度**：
+   - 使用 Gradle 缓存：`org.gradle.caching=true`
+   - 并行编译：`org.gradle.parallel=true`
+   - 配置 JVM 内存：`org.gradle.jvmargs=-Xmx4096m`
+
+3. **提升运行性能**：
+   - 使用 arm64-v8a 架构（性能最佳）
+   - 优化原生库编译选项（如 `-O3` 优化）
 
 ## Issue Reporting
 

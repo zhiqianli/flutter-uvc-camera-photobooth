@@ -388,7 +388,7 @@ public final class USBMonitor {
 		
 		// Start connection check
 		mDeviceCounts = 0;
-		mAsyncHandler.postDelayed(mDeviceCheckRunnable, 1000);
+		mAsyncHandler.postDelayed(mDeviceCheckRunnable, 100);
 		XLogWrapper.i(TAG, "register: USB monitor initialization complete, device check scheduled");
 	}
 	/**

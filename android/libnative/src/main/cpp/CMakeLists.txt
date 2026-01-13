@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 3.22.1)
 
 project("nativelib")
 
+# 16K page size support for Android devices
+# Required for devices with 16KB memory page size (e.g., some Android 15+ devices)
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+
 # lame
 include_directories(${CMAKE_SOURCE_DIR}/module/mp3/lame)
 aux_source_directory(${CMAKE_SOURCE_DIR}/module/mp3/lame SRC_LAME)

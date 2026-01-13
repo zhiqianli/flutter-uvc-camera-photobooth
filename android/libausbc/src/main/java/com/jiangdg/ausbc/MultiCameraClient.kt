@@ -334,7 +334,7 @@ class MultiCameraClient(ctx: Context, callback: IDeviceConnectCallBack?) {
                         // and use init preview size（measure size） for render size
                         val measureSize = try {
                             mSizeChangedFuture = SettableFuture()
-                            mSizeChangedFuture?.get(2000, TimeUnit.MILLISECONDS)
+                            mSizeChangedFuture?.get(100, TimeUnit.MILLISECONDS)
                         } catch (e: Exception) {
                             e.printStackTrace()
                             null

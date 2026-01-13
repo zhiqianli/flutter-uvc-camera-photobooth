@@ -38,13 +38,12 @@ class AspectRatioTextureView: TextureView, IAspectRatio {
 
     override fun setAspectRatio(width: Int, height: Int) {
         post {
-//            val orientation = context.resources.configuration.orientation
-//        // 处理竖屏和横屏情况
-//        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-//            setAspectRatio(height.toDouble() / width)
-//            return
-//        }
-            setAspectRatio(width.toDouble() / height)
+            // 修复竖屏显示问题：如果输入是横屏（宽>高），则反转比例以适配竖屏旋转
+            if (width > height) {
+                setAspectRatio(height.toDouble() / width)
+            } else {
+                setAspectRatio(width.toDouble() / height)
+            }
         }
 
     }
@@ -77,35 +76,9 @@ class AspectRatioTextureView: TextureView, IAspectRatio {
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        var initialWidth = MeasureSpec.getSize(widthMeasureSpec)
-        var initialHeight = MeasureSpec.getSize(heightMeasureSpec)
-        val horizontalPadding = paddingLeft - paddingRight
-        val verticalPadding = paddingTop - paddingBottom
-        initialWidth -= horizontalPadding
-        initialHeight -= verticalPadding
-        // 比较预览与TextureView(内容)纵横比
-        // 如果有变化，重新设置TextureView尺寸
-        val viewAspectRatio = initialWidth.toDouble() / initialHeight
-        val diff = mAspectRatio / viewAspectRatio - 1
-        var wMeasureSpec = widthMeasureSpec
-        var hMeasureSpec = heightMeasureSpec
-        if (mAspectRatio > 0 && abs(diff) > 0.01) {
-            // diff > 0， 按宽缩放
-            // diff < 0， 按高缩放
-            if (diff > 0) {
-                initialHeight = (initialWidth / mAspectRatio).toInt()
-            } else {
-                initialWidth = (initialHeight * mAspectRatio).toInt()
-            }
-            // 重新设置TextureView尺寸
-            // 注意加回padding大小
-            initialWidth += horizontalPadding
-            initialHeight += verticalPadding
-            wMeasureSpec = MeasureSpec.makeMeasureSpec(initialWidth, MeasureSpec.EXACTLY)
-            hMeasureSpec = MeasureSpec.makeMeasureSpec(initialHeight, MeasureSpec.EXACTLY)
-        }
-        // 将取景框尺寸放大2倍
-        super.onMeasure(wMeasureSpec * 2, hMeasureSpec * 2)
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        val height = MeasureSpec.getSize(heightMeasureSpec)
+        setMeasuredDimension(width, height)
     }
 
 
