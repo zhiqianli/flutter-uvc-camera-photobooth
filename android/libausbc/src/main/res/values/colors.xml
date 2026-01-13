@@ -5,6 +5,7 @@
     <color name="colorBlack">#000000</color>
     <color name="colorWhite">#FFFFFF</color>
     <color name="colorGray">#CDC5BF</color>
+    <color name="black">#FF000000</color>
 
     <color name="common_color_primary">#2E5BFF</color>
     <color name="common_color_primary_dark">#2E5BFF</color>
