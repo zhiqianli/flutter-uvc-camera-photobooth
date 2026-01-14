@@ -58,7 +58,8 @@ for dir in "$TEMP_DIR"/*; do
     if [ -d "$dir/res" ]; then
         echo "Copying resources from $(basename "$dir")"
         # Use rsync to copy resources without overwriting existing files
-        rsync -r "$dir/res/" "$SRC_DIR/res/" 2>/dev/null || true
+        # Exclude values.xml to avoid duplicates (resources are already in separate files)
+        rsync -r --exclude='values.xml' "$dir/res/" "$SRC_DIR/res/" 2>/dev/null || true
     fi
 done
 
