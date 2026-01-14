@@ -22,10 +22,6 @@ allprojects {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
-        // Local Maven repository for AAR files
-        flatDir {
-            dirs 'textaar'
-        }
     }
 }
 
@@ -68,10 +64,8 @@ android {
         implementation fileTree(dir: 'libs', include: ['*.jar'])
         implementation 'com.android.support.constraint:constraint-layout:2.0.4'
         implementation 'com.google.code.gson:gson:2.8.8'
-        // Direct AAR dependencies from textaar folder
-        implementation(name: 'libausbc-release', ext: 'aar')
-        implementation(name: 'libnative-release', ext: 'aar')
-        implementation(name: 'libuvc-release', ext: 'aar')
+        // Use JAR files instead of AAR to avoid "Direct local .aar file dependencies" error
+        implementation fileTree(dir: 'libs/jars', include: ['*.jar'])
         // Add XLog dependency required by libausbc
         implementation 'com.elvishew:xlog:1.11.0'
         // Add Material Components for BottomSheet and other Material Design attributes
