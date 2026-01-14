@@ -22,9 +22,9 @@ allprojects {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
-        // Local Maven repository for AAR files
+        // Local Maven repository for AAR files (using parent directory accessible by app)
         flatDir {
-            dirs 'textaar'
+            dirs '../aar'
         }
     }
 }
