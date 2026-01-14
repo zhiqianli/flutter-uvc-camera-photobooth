@@ -2,6 +2,7 @@ package com.chenyeju
 
 import android.app.Activity
 import android.os.Build
+import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -29,14 +30,24 @@ class FlutterUVCCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private var requestPermissionsResultListener: io.flutter.plugin.common.PluginRegistry.RequestPermissionsResultListener? = null
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        // Initialize resource bridge for libausbc
+        try {
+            val resourceBridgeClass = Class.forName("com.jiangdg.ausbc.R")
+            val initMethod = resourceBridgeClass.getDeclaredMethod("init", android.content.Context::class.java)
+            initMethod.invoke(null, flutterPluginBinding.applicationContext)
+            Log.i("FlutterUVCCameraPlugin", "Resource bridge initialized successfully")
+        } catch (e: Exception) {
+            Log.w("FlutterUVCCameraPlugin", "Failed to initialize resource bridge: ${e.message}")
+        }
+
         // 设置Method Channel
         methodChannel = MethodChannel(flutterPluginBinding.binaryMessenger, methodChannelName)
         methodChannel!!.setMethodCallHandler(this)
-        
+
         // 设置Video Stream EventChannel
         videoStreamChannel = EventChannel(flutterPluginBinding.binaryMessenger, videoStreamChannelName)
         videoStreamChannel!!.setStreamHandler(videoStreamHandler)
-        
+
         // 初始化视图工厂
         mUVCCameraViewFactory = UVCCameraViewFactory(this, methodChannel!!, videoStreamHandler)
         flutterPluginBinding.platformViewRegistry.registerViewFactory(viewName, mUVCCameraViewFactory)

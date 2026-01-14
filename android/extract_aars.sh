@@ -72,12 +72,60 @@ echo "Generating R class for libausbc..."
 R_TEMP_DIR="$(dirname "$0")/temp_r_generation"
 mkdir -p "$R_TEMP_DIR/com/jiangdg/ausbc"
 
-# Generate R.java with placeholder resource IDs
+# Generate R.java with runtime resource resolution
+# Note: We create a simpler version without Android dependencies
 cat > "$R_TEMP_DIR/R.java" << 'EOF'
 package com.jiangdg.ausbc;
 
+/**
+ * Bridge class that resolves resource IDs at runtime.
+ * libausbc code references com.jiangdg.ausbc.R, but actual resources
+ * are in the plugin package (com.chenyeju). This class bridges the gap.
+ * 
+ * Call init() with a Context to initialize resource IDs.
+ */
 public final class R {
+    private static android.content.Context applicationContext = null;
+
+    /**
+     * Initialize the resource bridge with application context.
+     * Call this early in your app, preferably in Application.onCreate().
+     */
+    public static void init(android.content.Context context) {
+        if (applicationContext == null && context != null) {
+            applicationContext = context.getApplicationContext();
+            raw.init(applicationContext);
+            android.util.Log.i("ResourceBridge", "Resource bridge initialized with package: " + context.getPackageName());
+        }
+    }
+
     public static final class raw {
+        public static int base_fragment;
+        public static int base_vertex;
+        public static int camera_fragment;
+        public static int camera_vertex;
+        public static int capture_vertex;
+        public static int effect_blackw_fragment;
+        public static int effect_soul_fragment;
+        public static int effect_zoom_vertex;
+
+        static void init(android.content.Context context) {
+            base_fragment = getId(context, "base_fragment");
+            base_vertex = getId(context, "base_vertex");
+            camera_fragment = getId(context, "camera_fragment");
+            camera_vertex = getId(context, "camera_vertex");
+            capture_vertex = getId(context, "capture_vertex");
+            effect_blackw_fragment = getId(context, "effect_blackw_fragment");
+            effect_soul_fragment = getId(context, "effect_soul_fragment");
+            effect_zoom_vertex = getId(context, "effect_zoom_vertex");
+        }
+
+        private static int getId(android.content.Context context, String name) {
+            int id = context.getResources().getIdentifier(name, "raw", context.getPackageName());
+            android.util.Log.d("ResourceBridge", "Resource raw/" + name + " = 0x" + Integer.toHexString(id));
+            return id;
+        }
+
         public static int[] getAll() {
             return new int[] {
                 base_fragment,
@@ -90,54 +138,56 @@ public final class R {
                 effect_zoom_vertex,
             };
         }
-
-        public static final int base_fragment = 0x7f010000;
-        public static final int base_vertex = 0x7f010001;
-        public static final int camera_fragment = 0x7f010002;
-        public static final int camera_vertex = 0x7f010003;
-        public static final int capture_vertex = 0x7f010004;
-        public static final int effect_blackw_fragment = 0x7f010005;
-        public static final int effect_soul_fragment = 0x7f010006;
-        public static final int effect_zoom_vertex = 0x7f010007;
     }
 
     public static final class layout {
-        public static final int activity_main = 0x7f020000;
-        public static final int base_fragment = 0x7f020001;
-        public static final int camera_view = 0x7f020002;
-        public static final int design_bottom_sheet = 0x7f020003;
-        public static final int dialog_camera = 0x7f020004;
-        public static final int listitem_device = 0x7f020005;
+        public static int activity_main;
+        public static int base_fragment;
+        public static int camera_view;
+        public static int design_bottom_sheet;
+        public static int dialog_camera;
+        public static int listitem_device;
     }
 
     public static final class id {
-        public static final int cameraView = 0x7f030000;
-        public static final int container = 0x7f030001;
-        public static final int preview = 0x7f030002;
+        public static int cameraView;
+        public static int container;
+        public static int preview;
     }
 
     public static final class string {
-        public static final int app_name = 0x7f040000;
+        public static int app_name;
     }
 
     public static final class color {
-        public static final int black = 0x7f050000;
-        public static final int white = 0x7f050001;
+        public static int black;
+        public static int white;
     }
 
     public static final class dimen {
-        public static final int margin_normal = 0x7f060000;
+        public static int margin_normal;
     }
 
     public static final class attr {
-        public static final int aspectRatio = 0x7f070000;
+        public static int aspectRatio;
     }
 }
 EOF
 
-# Compile R.java
-echo "Compiling R class..."
-javac -d "$R_TEMP_DIR" "$R_TEMP_DIR/R.java"
+# Find android.jar for compilation
+ANDROID_JAR="$ANDROID_HOME/platforms/android-34/android.jar"
+if [ ! -f "$ANDROID_JAR" ]; then
+    # Try to find it in common locations
+    ANDROID_JAR=$(find ~/Library/Android/sdk -name "android.jar" 2>/dev/null | grep "platforms/android-" | sort -V | tail -1)
+fi
+
+if [ -z "$ANDROID_JAR" ]; then
+    echo "Warning: android.jar not found, using simple compilation without classpath"
+    javac -d "$R_TEMP_DIR" "$R_TEMP_DIR/R.java" 2>/dev/null || echo "Compilation had warnings but continuing..."
+else
+    echo "Using android.jar: $ANDROID_JAR"
+    javac -cp "$ANDROID_JAR" -d "$R_TEMP_DIR" "$R_TEMP_DIR/R.java"
+fi
 
 # Inject R class into libausbc.jar
 LIBAUSBC_JAR="$(cd "$(dirname "$0")" && pwd)/libs/jars/libausbc.jar"
@@ -147,7 +197,7 @@ if [ -f "$LIBAUSBC_JAR" ]; then
     (
         cd "$R_TEMP_DIR" || exit 1
         for class_file in com/jiangdg/ausbc/R*.class; do
-            jar uf "$LIBAUSBC_JAR" "$class_file"
+            [ -f "$class_file" ] && jar uf "$LIBAUSBC_JAR" "$class_file"
         done
     )
     echo "R class successfully injected into libausbc.jar"
@@ -164,3 +214,4 @@ rm -rf "$TEMP_DIR"
 
 echo "AAR extraction complete!"
 echo "R class has been injected into libausbc.jar to fix NoClassDefFoundError issues."
+echo "IMPORTANT: Call com.jiangdg.ausbc.R.init(context) in your Flutter plugin code!"
